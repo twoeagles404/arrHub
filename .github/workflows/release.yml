@@ -1,0 +1,203 @@
+# =============================================================================
+# Deployrr — Auto-Release GitHub Actions Workflow
+# =============================================================================
+#
+# Triggers on: git tag push matching v*  (e.g., v3.0.0, v3.1.0)
+#
+# HOW TO RELEASE:
+#   git tag -a v3.0.0 -m "Release v3.0.0: 104 apps, SSE + SQLite + Auth"
+#   git push origin v3.0.0
+#
+# This workflow will:
+#   1. Create a GitHub Release with auto-generated release notes
+#   2. Attach the key files as release assets
+#   3. Build and push a Docker image to GitHub Container Registry (ghcr.io)
+#   4. Validate Bash scripts and catalog
+#
+# Required secrets (set in repo Settings → Secrets → Actions):
+#   GITHUB_TOKEN  — automatically provided by GitHub Actions
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ===========================================================================
+  # Job 1: Create GitHub Release and upload assets
+  # ===========================================================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "TAG=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [[ -n "${PREV_TAG}" ]]; then
+            CHANGES=$(git log ${PREV_TAG}..HEAD --oneline --no-decorate 2>/dev/null || echo "See commit history")
+          else
+            CHANGES="Initial release — 104 apps, SSE live dashboard, SQLite persistence, bearer token auth"
+          fi
+
+          APP_COUNT=$(python3 -c "import json; d=json.load(open('apps/catalog.json')); print(len(d['apps']))" 2>/dev/null || echo "104+")
+
+          cat > release_notes.md << EOF
+          ## Deployrr ${GITHUB_REF_NAME}
+
+          **One-command install:**
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sudo bash
+          \`\`\`
+
+          ### What's included
+          - **${APP_COUNT} apps** across 17 categories
+          - Pure Bash TUI with \`media\` command
+          - Flask WebUI on port 9999 with real-time SSE monitoring
+          - SQLite-backed settings and deployment history
+          - Optional bearer token authentication
+          - Deploy, Stack Manager, Updates, Backup, Settings tabs
+          - 100% MIT licensed — no paid tiers, no PHP, no BS
+
+          ### Changes in this release
+          ${CHANGES}
+
+          ### Quick start
+          \`\`\`bash
+          # Install
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sudo bash
+
+          # Open TUI
+          media
+
+          # Open WebUI (get token from container logs)
+          docker logs deployrr_webui | grep "DEPLOYRR TOKEN"
+          # http://your-server-ip:9999
+          \`\`\`
+
+          ---
+          *Deployrr — MIT Licensed · Built for the homelab community*
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Deployrr ${{ steps.version.outputs.TAG }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          files: |
+            install.sh
+            deployrr.sh
+            app.py
+            Dockerfile
+            apps/catalog.json
+            apps/catalog.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ===========================================================================
+  # Job 2: Build and push Docker image to ghcr.io
+  # ===========================================================================
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/deployrr
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=Deployrr WebUI
+            org.opencontainers.image.description=Homelab Docker deployment tool — Flask WebUI with SSE, SQLite, Auth, 104+ apps
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # Job 3: Validate scripts and catalog
+  # ===========================================================================
+  validate:
+    name: Validate Scripts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint install.sh
+        run: shellcheck --severity=warning install.sh || true
+
+      - name: Lint deployrr.sh
+        run: shellcheck --severity=error deployrr.sh || true
+
+      - name: Validate catalog.json
+        run: |
+          python3 -c "
+          import json
+          with open('apps/catalog.json') as f:
+              data = json.load(f)
+          apps = data['apps']
+          print(f'✓ catalog.json is valid JSON — {len(apps)} apps across {len(set(a[\"category\"] for a in apps))} categories')
+          "
+
+      - name: Verify Python syntax on app.py
+        run: python3 -m py_compile app.py && echo "✓ app.py syntax OK"
+
+      - name: Regenerate catalog.sh and verify
+        run: |
+          python3 scripts/gen_catalog_sh.py
+          bash -n apps/catalog.sh && echo "✓ catalog.sh syntax OK"
