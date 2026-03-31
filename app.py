@@ -132,14 +132,49 @@ def _db_init():
         """)
         conn.commit()
 
+# ── Env-var fallback map ──────────────────────────────────────────────────────
+# These env vars mirror what .env.example documents.  When the SQLite DB has no
+# value for a key (e.g. fresh container with no persisted /data volume), the
+# corresponding env var is used instead.  DB values always take precedence so
+# that UI-saved settings are never overridden silently.
+_ENV_KEY_MAP: dict[str, str] = {
+    "radarr_url":        "RADARR_URL",
+    "radarr_api_key":    "RADARR_API_KEY",
+    "sonarr_url":        "SONARR_URL",
+    "sonarr_api_key":    "SONARR_API_KEY",
+    "seerr_url":         "SEERR_URL",
+    "seerr_api_key":     "SEERR_API_KEY",
+    "transmission_url":  "TRANSMISSION_URL",
+    "transmission_user": "TRANSMISSION_USER",
+    "transmission_pass": "TRANSMISSION_PASS",
+    "plex_url":          "PLEX_URL",
+    "plex_token":        "PLEX_TOKEN",
+    "prowlarr_url":      "PROWLARR_URL",
+    "prowlarr_api_key":  "PROWLARR_API_KEY",
+    "groq_api_key":      "GROQ_API_KEY",
+}
+
 def _db_get(key, default=None):
-    """Get a setting value from SQLite."""
+    """Get a setting value from SQLite; fall back to env var, then default.
+
+    Priority order:
+      1. SQLite DB  (UI-saved values — always wins)
+      2. Environment variable (from .env / docker --env-file)
+      3. Supplied default
+    """
     try:
         with sqlite3.connect(DB_PATH) as conn:
             row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-            return row[0] if row else default
+            if row:
+                return row[0]
     except Exception:
-        return default
+        pass
+    env_key = _ENV_KEY_MAP.get(key)
+    if env_key:
+        env_val = os.environ.get(env_key)
+        if env_val:
+            return env_val
+    return default
 
 def _db_set(key, value):
     """Set a setting value in SQLite."""
