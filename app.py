@@ -14182,7 +14182,7 @@ function intellibotReload() {
 // Use same hostname as ArrHub so remote access (e.g. http://10.0.0.33:9999)
 // resolves to the server, not the client's localhost.
 let _ogiInited = false;
-function _ogiUrl() { return `http://${window.location.hostname}:3001`; }
+function _ogiUrl() { return `http://${window.location.hostname}:3002`; }
 function ogiInit() {
     if (_ogiInited) return;
     _ogiInited = true;
@@ -14205,7 +14205,7 @@ function ogiReload() {
 
 // ── ShadowBroker (geospatial intel) ──────────────────────────────────────────
 let _shadowbrokerInited = false;
-function _shadowbrokerUrl() { return `http://${window.location.hostname}:3000`; }
+function _shadowbrokerUrl() { return `http://${window.location.hostname}:3003`; }
 function shadowbrokerInit() {
     if (_shadowbrokerInited) return;
     _shadowbrokerInited = true;

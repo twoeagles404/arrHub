@@ -2702,7 +2702,7 @@
       "image": "ghcr.io/khashashin/ogi-frontend:latest",
       "description": "Open-source visual link analysis and OSINT framework. 20+ built-in enrichment transforms covering DNS, WHOIS, SSL, geolocation, and social media. AI Investigator included.",
       "ports": [
-        "3001:80"
+        "3002:80"
       ],
       "volumes": [],
       "environment": [
@@ -2716,7 +2716,7 @@
       "url_path": "/",
       "icon": "🔍",
       "full_stack": true,
-      "notes": "Full stack: deploy via 'git clone https://github.com/khashashin/ogi && cd ogi && cp .env.example .env && docker compose up -d'. Frontend → port 3001, Backend API → port 8000."
+      "notes": "Full stack: deploy via 'git clone https://github.com/khashashin/ogi && cd ogi && cp .env.example .env && docker compose up -d'. Frontend → port 3002, Backend API → port 8000. (Port 3001 is in use by framerr.)"
     },
     {
       "id": "shadowbroker",
@@ -2725,7 +2725,7 @@
       "image": "node:20-alpine",
       "description": "Real-time geospatial intelligence platform — 60+ public data feeds including aircraft ADS-B, maritime AIS, satellites, military bases, conflict zones, CCTV and more on a single map.",
       "ports": [
-        "3000:3000"
+        "3003:3003"
       ],
       "volumes": [],
       "environment": [],
@@ -2737,7 +2737,7 @@
       "url_path": "/",
       "icon": "🛰️",
       "full_stack": true,
-      "notes": "Deploy via: 'git clone https://github.com/BigBodyCobain/Shadowbroker && cd Shadowbroker && docker compose up -d'. Frontend accessible on port 3000."
+      "notes": "Deploy via: 'git clone https://github.com/BigBodyCobain/Shadowbroker && cd Shadowbroker && docker compose up -d'. Edit the compose/config to expose on port 3003. Frontend accessible on port 3003."
     }
   ]
 }
