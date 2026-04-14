@@ -211,6 +211,7 @@ def index():
     return HTMLResponse(content=_HTML_SPA)
 
 @app.get("/api/overview")
+@app.get("/api/system")   # alias — JS System Pulse calls /api/system
 def api_overview():
     """System overview: CPU, memory, load average, uptime.
     Static fields (hostname, kernel, arch) are cached for 5 min.
