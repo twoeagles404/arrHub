@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.19.0 · Full deployment, update management, and real-time monitoring
+Version: 3.20.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.19.0')
+app = FastAPI(title='ArrHub Monitor', version='3.20.0')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -838,9 +838,8 @@ def api_deploy_app(body: dict = Body(default={})):
     image: {app_data['image']}
     container_name: {app_id}
     restart: {app_data.get('restart', 'unless-stopped')}
+    network_mode: host
 """
-    if ports_yaml:
-        snippet += f"    ports:\n{ports_yaml}\n"
     if vols_yaml:
         snippet += f"    volumes:\n{vols_yaml}\n"
     if env_yaml:
@@ -934,10 +933,11 @@ def api_deploy_app(body: dict = Body(default={})):
             image_name,
             name=app_id,
             detach=True,
-            ports=port_bindings if port_bindings else None,
+            ports=None,          # host networking — no port mapping needed
             volumes=binds if binds else None,
             environment=environment if environment else None,
-            restart_policy={"Name": restart_val}
+            restart_policy={"Name": restart_val},
+            network_mode="host"
         )
 
         status = "success"
@@ -1078,7 +1078,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.19.0",
+            "version": "3.20.0",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1141,7 +1141,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.19.0",
+            "version": "3.20.0",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1512,7 +1512,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.19.0"})
+    return jsonify({"update_available": False, "version": "3.20.0"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -3962,71 +3962,6 @@ def api_seerr_requests():
     except Exception as e:
         return jsonify({"configured": True, "error": str(e), "requests": []})
 
-# ══════════════════════════════════════════════════════════════════
-# WORLD MONITOR REVERSE PROXY
-# Strips X-Frame-Options / CSP so worldmonitor.app renders inside ArrHub
-# ══════════════════════════════════════════════════════════════════
-_WM_BASE   = "https://www.worldmonitor.app"
-_WM_SKIP_H = {
-    "x-frame-options", "content-security-policy",
-    "content-encoding", "transfer-encoding",
-    "strict-transport-security",
-}
-
-@app.get("/proxy/worldmonitor")
-@app.get("/proxy/worldmonitor/{path:path}")
-def proxy_worldmonitor(request: Request, path: str = ""):
-    target = f"{_WM_BASE}/{path}"
-    params = dict(request.query_params)
-    fwd_headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower() not in ("host", "origin", "referer", "x-forwarded-for")
-    }
-    fwd_headers["host"] = "www.worldmonitor.app"
-    fwd_headers["referer"] = _WM_BASE + "/"
-    fwd_headers["origin"]  = _WM_BASE
-    try:
-        r = requests.get(target, params=params, headers=fwd_headers,
-                         timeout=15, stream=True)
-    except Exception as exc:
-        return Response(content=f"Proxy error: {exc}", status_code=502,
-                        media_type="text/plain")
-
-    resp_headers = {k: v for k, v in r.headers.items()
-                    if k.lower() not in _WM_SKIP_H}
-    content_type = r.headers.get("content-type", "")
-
-    if "text/html" in content_type:
-        html = r.content.decode("utf-8", errors="replace")
-        # Rewrite absolute + root-relative URLs to route through proxy
-        html = html.replace('src="https://www.worldmonitor.app/',
-                            'src="/proxy/worldmonitor/')
-        html = html.replace("src='https://www.worldmonitor.app/",
-                            "src='/proxy/worldmonitor/")
-        html = html.replace('href="https://www.worldmonitor.app/',
-                            'href="/proxy/worldmonitor/')
-        html = html.replace("href='https://www.worldmonitor.app/",
-                            "href='/proxy/worldmonitor/")
-        html = re.sub(r'(src|href)="(/(?!/))',
-                      r'\1="/proxy/worldmonitor/', html)
-        html = re.sub(r"(src|href)='(/(?!/))",
-                      r"\1='/proxy/worldmonitor/", html)
-        # Rewrite JS fetch / XHR base URL
-        html = html.replace("https://www.worldmonitor.app",
-                            f"{request.base_url.scheme}://{request.base_url.netloc}/proxy/worldmonitor")
-        return Response(content=html.encode("utf-8"),
-                        status_code=r.status_code,
-                        headers=resp_headers,
-                        media_type=content_type)
-
-    # All other assets (JS, CSS, images, map tiles) — stream through
-    def _iter():
-        for chunk in r.iter_content(chunk_size=32768):
-            yield chunk
-    return StreamingResponse(_iter(), status_code=r.status_code,
-                              headers=resp_headers,
-                              media_type=content_type or "application/octet-stream")
-
 
 @app.get("/api/home")
 def api_home():
@@ -4416,7 +4351,8 @@ body {
 /* ── Live TV slide ── */
 #apps-livetv-slide{display:flex;flex-direction:column;min-width:100%;height:100%;overflow:hidden;}
 #tab-intellibot.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0!important;overflow:hidden;}
-#tab-worldmonitor.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0!important;overflow:hidden;}
+#tab-ogi.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0!important;overflow:hidden;}
+#tab-shadowbroker.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0!important;overflow:hidden;}
 .livetv-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--text2);font-size:9px;font-weight:600;letter-spacing:.02em;padding:3px 5px;cursor:pointer;white-space:nowrap;transition:color .15s,border-color .15s;}
 .livetv-tab:hover{color:var(--text);}
 .livetv-tab.active{color:var(--blue);border-bottom-color:var(--blue);}
@@ -5871,7 +5807,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.19.0</div>
+      <div class="sb-version">v3.20.0</div>
     </div>
   </div>
 
@@ -5959,9 +5895,13 @@ body.sse-disconnected #app{padding-top:38px;}
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7V5a3 3 0 016 0v2M9 12h.01M15 12h.01M9 16h6"/></svg>
       Intellibot
     </div>
-    <div class="sb-item" onclick="showTab('worldmonitor',this)">
-      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><line x1="2" y1="12" x2="22" y2="12" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
-      World Monitor
+    <div class="sb-item" onclick="showTab('ogi',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 7v4l3 3"/></svg>
+      OGI
+    </div>
+    <div class="sb-item" onclick="showTab('shadowbroker',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+      ShadowBroker
     </div>
   </div>
 
@@ -6987,14 +6927,14 @@ body.sse-disconnected #app{padding-top:38px;}
       <div class="panel">
         <div class="panel-title">🤖 AI Services</div>
         <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
-          Your Groq API key powers AI features in ArrHub — including Intellibot and World Monitor AI analysis.
+          Your Groq API key powers AI features in ArrHub — including Intellibot.
           Get a free key at <a href="https://console.groq.com/keys" target="_blank" rel="noopener" style="color:var(--blue)">console.groq.com/keys</a>.
         </div>
         <div class="settings-grid">
           <div class="field" style="grid-column:1/-1">
             <label>Groq API Key</label>
             <input type="password" id="svc-groq-key" placeholder="gsk_••••••••••••••••••••••••••••••••">
-            <div class="field-hint">Stored securely server-side. Used by Intellibot and World Monitor features.</div>
+            <div class="field-hint">Stored securely server-side. Used by Intellibot.</div>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
@@ -7156,7 +7096,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.19.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.20.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -7673,30 +7613,60 @@ body.sse-disconnected #app{padding-top:38px;}
     </div><!-- /tab-intellibot -->
 
     <!-- ═══════════════════════════════════════════════════════════
-         WORLD MONITOR TAB
+         OGI TAB — Open-source visual link analysis & OSINT framework
     ═══════════════════════════════════════════════════════════ -->
-    <div id="tab-worldmonitor" class="tab-panel">
+    <div id="tab-ogi" class="tab-panel">
       <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">
-        <span style="font-size:16px">🌍</span>
-        <span style="font-weight:600;font-size:13px;flex:1">World Monitor</span>
-        <button class="btn" style="padding:3px 10px;font-size:11px" onclick="worldmonitorReload()" title="Reload">↻ Reload</button>
-        <a href="https://www.worldmonitor.app/?lat=20.2273&amp;lon=0.0000&amp;zoom=1.48&amp;view=global&amp;timeRange=7d&amp;layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none">↗ Open</a>
+        <span style="font-size:16px">🔍</span>
+        <span style="font-weight:600;font-size:13px;flex:1">OGI — OSINT Framework</span>
+        <button class="btn" style="padding:3px 10px;font-size:11px" onclick="ogiReload()" title="Reload">↻ Reload</button>
+        <a id="ogi-open-link" href="http://localhost:3001" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none">↗ Open</a>
       </div>
       <div style="flex:1;position:relative;min-height:0">
-        <iframe id="worldmonitor-frame"
-          src="/proxy/worldmonitor/?lat=20.2273&lon=0.0000&zoom=1.48&view=global&timeRange=7d&layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks"
+        <iframe id="ogi-frame"
+          src=""
           style="position:absolute;inset:0;width:100%;height:100%;border:none"
           allow="autoplay; fullscreen; picture-in-picture; geolocation"
-          allowfullscreen loading="lazy"
-          onerror="document.getElementById('worldmonitor-err').style.display='flex'"></iframe>
-        <div id="worldmonitor-err" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:var(--bg1);color:var(--text2);font-size:13px;text-align:center;padding:20px">
-          <span style="font-size:36px">🚫</span>
-          <strong style="color:var(--text)">World Monitor can&#39;t be embedded</strong>
-          <span style="font-size:12px;color:var(--text3);max-width:320px">The site may block embedding via X-Frame-Options. Open it in a new tab instead.</span>
-          <a href="https://www.worldmonitor.app/?lat=20.2273&lon=0.0000&zoom=1.48&view=global&timeRange=7d&layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks" target="_blank" rel="noopener" class="btn blue" style="margin-top:4px;text-decoration:none;padding:7px 18px">Open worldmonitor.app ↗</a>
+          allowfullscreen loading="lazy"></iframe>
+        <div id="ogi-placeholder" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:var(--bg1);color:var(--text2);font-size:13px;text-align:center;padding:24px">
+          <span style="font-size:40px">🔍</span>
+          <strong style="color:var(--text);font-size:15px">OGI — Open Graph Intel</strong>
+          <span style="font-size:12px;color:var(--text3);max-width:380px">Visual link analysis and OSINT framework. Deploy it via docker compose, then click Load OGI.</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+            <a href="https://github.com/khashashin/ogi" target="_blank" rel="noopener" class="btn" style="text-decoration:none;padding:7px 14px;font-size:12px">📦 GitHub</a>
+            <button class="btn-primary" onclick="ogiLoad()" style="padding:7px 14px;font-size:12px">▶ Load OGI</button>
+          </div>
         </div>
       </div>
-    </div><!-- /tab-worldmonitor -->
+    </div><!-- /tab-ogi -->
+
+    <!-- ═══════════════════════════════════════════════════════════
+         SHADOWBROKER TAB — Real-time geospatial intelligence
+    ═══════════════════════════════════════════════════════════ -->
+    <div id="tab-shadowbroker" class="tab-panel">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">
+        <span style="font-size:16px">🛰️</span>
+        <span style="font-weight:600;font-size:13px;flex:1">ShadowBroker — Geospatial Intel</span>
+        <button class="btn" style="padding:3px 10px;font-size:11px" onclick="shadowbrokerReload()" title="Reload">↻ Reload</button>
+        <a id="shadowbroker-open-link" href="http://localhost:3000" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none">↗ Open</a>
+      </div>
+      <div style="flex:1;position:relative;min-height:0">
+        <iframe id="shadowbroker-frame"
+          src=""
+          style="position:absolute;inset:0;width:100%;height:100%;border:none"
+          allow="autoplay; fullscreen; picture-in-picture; geolocation"
+          allowfullscreen loading="lazy"></iframe>
+        <div id="shadowbroker-placeholder" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:var(--bg1);color:var(--text2);font-size:13px;text-align:center;padding:24px">
+          <span style="font-size:40px">🛰️</span>
+          <strong style="color:var(--text);font-size:15px">ShadowBroker</strong>
+          <span style="font-size:12px;color:var(--text3);max-width:380px">Real-time geospatial intelligence — 60+ public feeds: aircraft, maritime, satellites, conflict zones, and more. Deploy via docker compose on port 3000.</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+            <a href="https://github.com/BigBodyCobain/Shadowbroker" target="_blank" rel="noopener" class="btn" style="text-decoration:none;padding:7px 14px;font-size:12px">📦 GitHub</a>
+            <button class="btn-primary" onclick="shadowbrokerLoad()" style="padding:7px 14px;font-size:12px">▶ Load ShadowBroker</button>
+          </div>
+        </div>
+      </div>
+    </div><!-- /tab-shadowbroker -->
 
     <!-- Team Detail Modal -->
     <div id="football-team-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:920;align-items:flex-start;justify-content:flex-end;padding:12px">
@@ -7867,9 +7837,9 @@ body.sse-disconnected #app{padding-top:38px;}
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7V5a3 3 0 016 0v2M9 12h.01M15 12h.01M9 16h6"/></svg>
     <span>Intellibot</span>
   </button>
-  <button class="bn-item" onclick="showTab('worldmonitor',this);closeSidebar()">
-    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><line x1="2" y1="12" x2="22" y2="12" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
-    <span>World Monitor</span>
+  <button class="bn-item" onclick="showTab('ogi',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 7v4l3 3"/></svg>
+    <span>OGI</span>
   </button>
   <button class="bn-item" onclick="toggleSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -8055,7 +8025,8 @@ function showTab(name, el) {
     else if (name === 'epl') footballInit();
     else if (name === 'iptv') iptvInit();
     else if (name === 'intellibot') intellibotInit();
-    else if (name === 'worldmonitor') worldmonitorInit();
+    else if (name === 'ogi') ogiInit();
+    else if (name === 'shadowbroker') shadowbrokerInit();
 }
 
 function openExternalLink(url) {
@@ -14206,18 +14177,47 @@ function intellibotReload() {
     if (f) { f.src = f.src; }
 }
 
-// ── World Monitor (global events map) ─────────────────────────────────────
-let _worldmonitorInited = false;
-function worldmonitorInit() {
-    if (_worldmonitorInited) return;
-    _worldmonitorInited = true;
-    // Frame src is set in HTML; nothing extra needed on first open
+// ── OGI (OSINT framework) ────────────────────────────────────────────────────
+let _ogiInited = false;
+const _OGI_URL = 'http://localhost:3001';
+function ogiInit() {
+    if (_ogiInited) return;
+    _ogiInited = true;
+    // Show placeholder — user must click "Load OGI" to avoid port-scan noise
 }
-function worldmonitorReload() {
-    const f = document.getElementById('worldmonitor-frame');
-    if (f) {
-        f.src = '/proxy/worldmonitor/?lat=20.2273&lon=0.0000&zoom=1.48&view=global&timeRange=7d&layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks';
-    }
+function ogiLoad() {
+    const f  = document.getElementById('ogi-frame');
+    const ph = document.getElementById('ogi-placeholder');
+    const lk = document.getElementById('ogi-open-link');
+    if (f) { f.src = _OGI_URL; }
+    if (ph) { ph.style.display = 'none'; }
+    if (lk) { lk.href = _OGI_URL; }
+}
+function ogiReload() {
+    const f = document.getElementById('ogi-frame');
+    if (f && f.src) { f.src = f.src; }
+    else ogiLoad();
+}
+
+// ── ShadowBroker (geospatial intel) ──────────────────────────────────────────
+let _shadowbrokerInited = false;
+const _SHADOWBROKER_URL = 'http://localhost:3000';
+function shadowbrokerInit() {
+    if (_shadowbrokerInited) return;
+    _shadowbrokerInited = true;
+}
+function shadowbrokerLoad() {
+    const f  = document.getElementById('shadowbroker-frame');
+    const ph = document.getElementById('shadowbroker-placeholder');
+    const lk = document.getElementById('shadowbroker-open-link');
+    if (f) { f.src = _SHADOWBROKER_URL; }
+    if (ph) { ph.style.display = 'none'; }
+    if (lk) { lk.href = _SHADOWBROKER_URL; }
+}
+function shadowbrokerReload() {
+    const f = document.getElementById('shadowbroker-frame');
+    if (f && f.src) { f.src = f.src; }
+    else shadowbrokerLoad();
 }
 
 // ── Live TV (YouTube embed) ────────────────────────────────────────────────

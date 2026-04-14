@@ -6,6 +6,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.20.0] — 2026-04-14
+
+### Changed
+- **World Monitor removed** — Replaced the World Monitor sidebar entry and tab with two new
+  embedded tools: **OGI** (Open Graph Intel — visual OSINT link analysis, port 3001) and
+  **ShadowBroker** (real-time geospatial intelligence, port 3000). Both show a splash screen
+  until the user clicks "Load" to avoid unnecessary network requests.
+- **Docker host networking** — All containers deployed via ArrHub now use `network_mode: host`.
+  Port bindings are omitted from the deploy call since they are not used with host networking.
+  The compose snapshot written to disk also reflects `network_mode: host`.
+- **Catalog expanded** — OGI and ShadowBroker added to app catalog under the new
+  "OSINT & Intel" category (total: 103 apps). Each entry includes full docker compose
+  deployment notes.
+- **Superpowers plugin installed** — `/brainstorming` slash command added
+  (`~/.claude/commands/brainstorming.md`) pointing to the `superpowers:brainstorming` skill.
+
+---
+
 ## [3.19.0] — 2026-03-26
 
 ### Fixed

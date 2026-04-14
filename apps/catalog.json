@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "generated_by": "ArrHub (converted from YAML)",
     "github": "https://github.com/twoeagles404/arrhub",
-    "total_apps": 101
+    "total_apps": 103
   },
   "apps": [
     {
@@ -2694,6 +2694,50 @@
       "icon": "📦",
       "full_stack": false,
       "notes": "Built from local Dockerfile. Run 'media → WebUI Control → Rebuild' after updates."
+    },
+    {
+      "id": "ogi",
+      "name": "OGI — Open Graph Intel",
+      "category": "OSINT & Intel",
+      "image": "ghcr.io/khashashin/ogi-frontend:latest",
+      "description": "Open-source visual link analysis and OSINT framework. 20+ built-in enrichment transforms covering DNS, WHOIS, SSL, geolocation, and social media. AI Investigator included.",
+      "ports": [
+        "3001:80"
+      ],
+      "volumes": [],
+      "environment": [
+        "VITE_API_URL=http://localhost:8000"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": "host",
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🔍",
+      "full_stack": true,
+      "notes": "Full stack: deploy via 'git clone https://github.com/khashashin/ogi && cd ogi && cp .env.example .env && docker compose up -d'. Frontend → port 3001, Backend API → port 8000."
+    },
+    {
+      "id": "shadowbroker",
+      "name": "ShadowBroker",
+      "category": "OSINT & Intel",
+      "image": "node:20-alpine",
+      "description": "Real-time geospatial intelligence platform — 60+ public data feeds including aircraft ADS-B, maritime AIS, satellites, military bases, conflict zones, CCTV and more on a single map.",
+      "ports": [
+        "3000:3000"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": "host",
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🛰️",
+      "full_stack": true,
+      "notes": "Deploy via: 'git clone https://github.com/BigBodyCobain/Shadowbroker && cd Shadowbroker && docker compose up -d'. Frontend accessible on port 3000."
     }
   ]
 }
