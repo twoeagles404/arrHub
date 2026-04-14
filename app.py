@@ -7621,7 +7621,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <span style="font-size:16px">🔍</span>
         <span style="font-weight:600;font-size:13px;flex:1">OGI — OSINT Framework</span>
         <button class="btn" style="padding:3px 10px;font-size:11px" onclick="ogiReload()" title="Reload">↻ Reload</button>
-        <a id="ogi-open-link" href="http://localhost:3001" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none">↗ Open</a>
+        <a id="ogi-open-link" href="#" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none" onclick="this.href=_ogiUrl()">↗ Open</a>
       </div>
       <div style="flex:1;position:relative;min-height:0">
         <iframe id="ogi-frame"
@@ -7649,7 +7649,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <span style="font-size:16px">🛰️</span>
         <span style="font-weight:600;font-size:13px;flex:1">ShadowBroker — Geospatial Intel</span>
         <button class="btn" style="padding:3px 10px;font-size:11px" onclick="shadowbrokerReload()" title="Reload">↻ Reload</button>
-        <a id="shadowbroker-open-link" href="http://localhost:3000" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none">↗ Open</a>
+        <a id="shadowbroker-open-link" href="#" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none" onclick="this.href=_shadowbrokerUrl()">↗ Open</a>
       </div>
       <div style="flex:1;position:relative;min-height:0">
         <iframe id="shadowbroker-frame"
@@ -14179,45 +14179,49 @@ function intellibotReload() {
 }
 
 // ── OGI (OSINT framework) ────────────────────────────────────────────────────
+// Use same hostname as ArrHub so remote access (e.g. http://10.0.0.33:9999)
+// resolves to the server, not the client's localhost.
 let _ogiInited = false;
-const _OGI_URL = 'http://localhost:3001';
+function _ogiUrl() { return `http://${window.location.hostname}:3001`; }
 function ogiInit() {
     if (_ogiInited) return;
     _ogiInited = true;
     // Show placeholder — user must click "Load OGI" to avoid port-scan noise
 }
 function ogiLoad() {
+    const url = _ogiUrl();
     const f  = document.getElementById('ogi-frame');
     const ph = document.getElementById('ogi-placeholder');
     const lk = document.getElementById('ogi-open-link');
-    if (f) { f.src = _OGI_URL; }
+    if (f) { f.src = url; }
     if (ph) { ph.style.display = 'none'; }
-    if (lk) { lk.href = _OGI_URL; }
+    if (lk) { lk.href = url; }
 }
 function ogiReload() {
     const f = document.getElementById('ogi-frame');
-    if (f && f.src) { f.src = f.src; }
+    if (f && f.src && f.src !== window.location.href) { f.src = f.src; }
     else ogiLoad();
 }
 
 // ── ShadowBroker (geospatial intel) ──────────────────────────────────────────
 let _shadowbrokerInited = false;
-const _SHADOWBROKER_URL = 'http://localhost:3000';
+function _shadowbrokerUrl() { return `http://${window.location.hostname}:3000`; }
 function shadowbrokerInit() {
     if (_shadowbrokerInited) return;
     _shadowbrokerInited = true;
 }
 function shadowbrokerLoad() {
+    const url = _shadowbrokerUrl();
     const f  = document.getElementById('shadowbroker-frame');
     const ph = document.getElementById('shadowbroker-placeholder');
     const lk = document.getElementById('shadowbroker-open-link');
-    if (f) { f.src = _SHADOWBROKER_URL; }
+    if (f) { f.src = url; }
     if (ph) { ph.style.display = 'none'; }
-    if (lk) { lk.href = _SHADOWBROKER_URL; }
+    if (lk) { lk.href = url; }
 }
 function shadowbrokerReload() {
     const f = document.getElementById('shadowbroker-frame');
-    if (f && f.src) { f.src = f.src; }
+    if (f && f.src && f.src !== window.location.href) { f.src = f.src; }
     else shadowbrokerLoad();
 }
 
