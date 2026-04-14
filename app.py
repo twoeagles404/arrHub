@@ -14186,7 +14186,7 @@ function _ogiUrl() { return `http://${window.location.hostname}:3001`; }
 function ogiInit() {
     if (_ogiInited) return;
     _ogiInited = true;
-    // Show placeholder — user must click "Load OGI" to avoid port-scan noise
+    ogiLoad();   // auto-load when tab opens
 }
 function ogiLoad() {
     const url = _ogiUrl();
@@ -14209,6 +14209,7 @@ function _shadowbrokerUrl() { return `http://${window.location.hostname}:3000`; 
 function shadowbrokerInit() {
     if (_shadowbrokerInited) return;
     _shadowbrokerInited = true;
+    shadowbrokerLoad();   // auto-load when tab opens
 }
 function shadowbrokerLoad() {
     const url = _shadowbrokerUrl();
