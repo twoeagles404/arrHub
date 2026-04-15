@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.20.0 · Full deployment, update management, and real-time monitoring
+Version: 3.20.1 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.20.0')
+app = FastAPI(title='ArrHub Monitor', version='3.20.1')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -802,6 +802,117 @@ def _resolve_port_mapping(mapping: str) -> tuple:
         return f"{new_port}:{container_port}", host_port, new_port, True
     return mapping, host_port, host_port, False
 
+def _deploy_fullstack(app_id, app_data, config_dir):
+    """Clone/pull a git repo, patch ports, copy .env, and run docker compose up -d."""
+    git_url = app_data["git_url"]
+    repos_dir = os.path.join(config_dir, "repos")
+    repo_dir  = os.path.join(repos_dir, app_id)
+    logs      = []
+
+    try:
+        os.makedirs(repos_dir, exist_ok=True)
+
+        # ── Clone or pull ─────────────────────────────────────────────────────
+        if os.path.isdir(os.path.join(repo_dir, ".git")):
+            r = subprocess.run(
+                ["git", "-C", repo_dir, "pull"],
+                capture_output=True, text=True, timeout=120
+            )
+            logs.append(f"$ git -C {repo_dir} pull\n{r.stdout}{r.stderr}".strip())
+        else:
+            r = subprocess.run(
+                ["git", "clone", git_url, repo_dir],
+                capture_output=True, text=True, timeout=180
+            )
+            logs.append(f"$ git clone {git_url} {repo_dir}\n{r.stdout}{r.stderr}".strip())
+        if r.returncode != 0:
+            raise RuntimeError(f"git failed (exit {r.returncode}): {r.stderr}")
+
+        # ── Copy .env.example → .env if missing ───────────────────────────────
+        env_example = os.path.join(repo_dir, ".env.example")
+        env_file    = os.path.join(repo_dir, ".env")
+        if os.path.exists(env_example) and not os.path.exists(env_file):
+            shutil.copy(env_example, env_file)
+            logs.append("$ cp .env.example .env  ✓")
+
+        # ── Apply environment overrides from catalog into .env ─────────────────
+        env_overrides = app_data.get("environment", [])
+        if env_overrides:
+            env_content = open(env_file).read() if os.path.exists(env_file) else ""
+            for entry in env_overrides:
+                if "=" in entry:
+                    key, val = entry.split("=", 1)
+                    if re.search(rf"^{re.escape(key)}\s*=", env_content, re.MULTILINE):
+                        env_content = re.sub(
+                            rf"^{re.escape(key)}\s*=.*", f"{key}={val}",
+                            env_content, flags=re.MULTILINE
+                        )
+                    else:
+                        env_content += f"\n{key}={val}"
+            with open(env_file, "w") as f:
+                f.write(env_content)
+            logs.append(f"✓ .env updated with catalog overrides: {[e.split('=')[0] for e in env_overrides]}")
+
+        # ── Patch compose_port_overrides into docker-compose.yml ──────────────
+        overrides = app_data.get("compose_port_overrides", {})
+        if overrides:
+            compose_file = os.path.join(repo_dir, "docker-compose.yml")
+            if not os.path.exists(compose_file):
+                compose_file = os.path.join(repo_dir, "docker-compose.yaml")
+            if os.path.exists(compose_file):
+                content = open(compose_file).read()
+                for container_port, host_port in overrides.items():
+                    # Matches:  - "XXXX:container_port"  or  - XXXX:container_port
+                    content = re.sub(
+                        rf'(- ["\']?)\d+:{re.escape(str(container_port))}(["\']?)',
+                        rf'\g<1>{host_port}:{container_port}\g<2>',
+                        content
+                    )
+                with open(compose_file, "w") as f:
+                    f.write(content)
+                logs.append(f"✓ docker-compose.yml ports patched: {overrides}")
+
+        # ── docker compose up -d ──────────────────────────────────────────────
+        r = subprocess.run(
+            ["docker", "compose", "up", "-d", "--build"],
+            cwd=repo_dir,
+            capture_output=True, text=True, timeout=600
+        )
+        logs.append(f"$ docker compose up -d --build\n{r.stdout}{r.stderr}".strip())
+        if r.returncode != 0:
+            raise RuntimeError(f"docker compose failed (exit {r.returncode}): {r.stderr}")
+
+        log_text = "\n\n".join(logs)
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "INSERT INTO deploy_history (app_id, app_name, action, status, compose_snapshot, error) VALUES (?,?,?,?,?,?)",
+                    (app_id, app_data["name"], "deploy", "success", log_text, None)
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+        return jsonify({"status": "success", "app_id": app_id, "logs": log_text, "repo_dir": repo_dir})
+
+    except subprocess.TimeoutExpired as e:
+        err = f"Deployment timed out: {e}"
+    except Exception as e:
+        err = str(e)
+
+    log_text = "\n\n".join(logs) + f"\n\n✗ ERROR: {err}"
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO deploy_history (app_id, app_name, action, status, compose_snapshot, error) VALUES (?,?,?,?,?,?)",
+                (app_id, app_data["name"], "deploy", "failed", log_text, err)
+            )
+            conn.commit()
+    except Exception:
+        pass
+    return jsonify({"status": "failed", "logs": log_text, "error": err}, 500)
+
+
 @app.post("/api/deploy")
 @require_auth
 def api_deploy_app(body: dict = Body(default={})):
@@ -818,6 +929,11 @@ def api_deploy_app(body: dict = Body(default={})):
         return jsonify({"error": f"App '{app_id}' not found in catalog"}, 404)
 
     config_dir = _db_get("config_dir", "/docker")
+
+    # ── Full-stack git+compose deployment ─────────────────────────────────────
+    if app_data.get("git_url"):
+        return _deploy_fullstack(app_id, app_data, config_dir)
+
     media_dir = _db_get("media_dir", "/mnt/media")
     tz = _db_get("tz", "America/New_York")
     puid = _db_get("puid", "1000")
@@ -1079,7 +1195,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.20.0",
+            "version": "3.20.1",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1142,7 +1258,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.20.0",
+            "version": "3.20.1",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1513,7 +1629,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.20.0"})
+    return jsonify({"update_available": False, "version": "3.20.1"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -5808,7 +5924,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.20.0</div>
+      <div class="sb-version">v3.20.1</div>
     </div>
   </div>
 
@@ -7097,7 +7213,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.20.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.20.1</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -7632,11 +7748,12 @@ body.sse-disconnected #app{padding-top:38px;}
         <div id="ogi-placeholder" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:var(--bg1);color:var(--text2);font-size:13px;text-align:center;padding:24px">
           <span style="font-size:40px">🔍</span>
           <strong style="color:var(--text);font-size:15px">OGI — Open Graph Intel</strong>
-          <span style="font-size:12px;color:var(--text3);max-width:380px">Visual link analysis and OSINT framework. Deploy it via docker compose, then click Load OGI.</span>
+          <span style="font-size:12px;color:var(--text3);max-width:380px">Visual link analysis and OSINT framework. Click Deploy to automatically clone, configure, and start OGI on port 3002.</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
             <a href="https://github.com/khashashin/ogi" target="_blank" rel="noopener" class="btn" style="text-decoration:none;padding:7px 14px;font-size:12px">📦 GitHub</a>
-            <button class="btn-primary" onclick="ogiLoad()" style="padding:7px 14px;font-size:12px">▶ Load OGI</button>
+            <button class="btn-primary" id="ogi-deploy-btn" onclick="deployFullStack('ogi')" style="padding:7px 14px;font-size:12px">🚀 Deploy OGI</button>
           </div>
+          <div id="ogi-deploy-log" style="display:none;width:100%;max-width:560px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:left;font-family:monospace;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"></div>
         </div>
       </div>
     </div><!-- /tab-ogi -->
@@ -7660,11 +7777,12 @@ body.sse-disconnected #app{padding-top:38px;}
         <div id="shadowbroker-placeholder" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:var(--bg1);color:var(--text2);font-size:13px;text-align:center;padding:24px">
           <span style="font-size:40px">🛰️</span>
           <strong style="color:var(--text);font-size:15px">ShadowBroker</strong>
-          <span style="font-size:12px;color:var(--text3);max-width:380px">Real-time geospatial intelligence — 60+ public feeds: aircraft, maritime, satellites, conflict zones, and more. Deploy via docker compose on port 3000.</span>
+          <span style="font-size:12px;color:var(--text3);max-width:380px">Real-time geospatial intelligence — 60+ public feeds: aircraft, maritime, satellites, conflict zones, and more. Click Deploy to automatically clone, configure, and start ShadowBroker on port 3003.</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
             <a href="https://github.com/BigBodyCobain/Shadowbroker" target="_blank" rel="noopener" class="btn" style="text-decoration:none;padding:7px 14px;font-size:12px">📦 GitHub</a>
-            <button class="btn-primary" onclick="shadowbrokerLoad()" style="padding:7px 14px;font-size:12px">▶ Load ShadowBroker</button>
+            <button class="btn-primary" id="shadowbroker-deploy-btn" onclick="deployFullStack('shadowbroker')" style="padding:7px 14px;font-size:12px">🚀 Deploy ShadowBroker</button>
           </div>
+          <div id="shadowbroker-deploy-log" style="display:none;width:100%;max-width:560px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:left;font-family:monospace;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"></div>
         </div>
       </div>
     </div><!-- /tab-shadowbroker -->
@@ -14178,6 +14296,51 @@ function intellibotReload() {
     if (f) { f.src = f.src; }
 }
 
+// ── Full-stack git+compose deploy ─────────────────────────────────────────────
+// Called by 🚀 Deploy buttons on OGI and ShadowBroker placeholders.
+// POSTs to /api/deploy, streams log output into the log panel, then auto-loads
+// the iframe on success.
+async function deployFullStack(appId) {
+    const btn    = document.getElementById(`${appId}-deploy-btn`);
+    const logBox = document.getElementById(`${appId}-deploy-log`);
+    if (!btn || !logBox) return;
+
+    btn.disabled    = true;
+    btn.textContent = '⏳ Deploying…';
+    logBox.style.display = 'block';
+    logBox.textContent   = 'Starting deployment — this may take a minute…\n';
+
+    try {
+        const token = window._authToken || localStorage.getItem('arrhub_token') || '';
+        const resp = await fetch('/api/deploy', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json', ...(token ? {'X-Auth-Token': token} : {}) },
+            body:    JSON.stringify({ app_id: appId })
+        });
+        const data = await resp.json();
+        logBox.textContent = data.logs || data.error || JSON.stringify(data, null, 2);
+        logBox.scrollTop   = logBox.scrollHeight;
+
+        if (resp.ok && data.status === 'success') {
+            btn.textContent = '✓ Deployed!';
+            btn.style.background = 'var(--green, #16a34a)';
+            logBox.textContent += '\n\n✓ Done — loading app…';
+            // Wait a moment for the service to be ready, then load the iframe
+            setTimeout(() => {
+                if (appId === 'ogi')         ogiLoad();
+                if (appId === 'shadowbroker') shadowbrokerLoad();
+            }, 2500);
+        } else {
+            btn.disabled    = false;
+            btn.textContent = '🔄 Retry Deploy';
+        }
+    } catch (err) {
+        logBox.textContent += `\n\nNetwork error: ${err}`;
+        btn.disabled    = false;
+        btn.textContent = '🔄 Retry Deploy';
+    }
+}
+
 // ── OGI (OSINT framework) ────────────────────────────────────────────────────
 // Use same hostname as ArrHub so remote access (e.g. http://10.0.0.33:9999)
 // resolves to the server, not the client's localhost.
@@ -14186,7 +14349,10 @@ function _ogiUrl() { return `http://${window.location.hostname}:3002`; }
 function ogiInit() {
     if (_ogiInited) return;
     _ogiInited = true;
-    ogiLoad();   // auto-load when tab opens
+    // Probe the service first — only load iframe if it's actually up
+    fetch(_ogiUrl(), { mode: 'no-cors', signal: AbortSignal.timeout(3000) })
+        .then(() => ogiLoad())
+        .catch(() => { /* service not running — placeholder stays, user clicks Deploy */ });
 }
 function ogiLoad() {
     const url = _ogiUrl();
@@ -14209,7 +14375,10 @@ function _shadowbrokerUrl() { return `http://${window.location.hostname}:3003`; 
 function shadowbrokerInit() {
     if (_shadowbrokerInited) return;
     _shadowbrokerInited = true;
-    shadowbrokerLoad();   // auto-load when tab opens
+    // Probe the service first — only load iframe if it's actually up
+    fetch(_shadowbrokerUrl(), { mode: 'no-cors', signal: AbortSignal.timeout(3000) })
+        .then(() => shadowbrokerLoad())
+        .catch(() => { /* service not running — placeholder stays, user clicks Deploy */ });
 }
 function shadowbrokerLoad() {
     const url = _shadowbrokerUrl();

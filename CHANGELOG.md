@@ -6,6 +6,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.20.1] — 2026-04-15
+
+### Added
+- **Fully automated full-stack deployment** — Apps with a `git_url` in the catalog now deploy
+  entirely automatically via the existing `POST /api/deploy` endpoint. The backend clones the repo
+  (or `git pull`s if already cloned), copies `.env.example → .env`, applies catalog environment
+  overrides, patches `compose_port_overrides` into `docker-compose.yml`, and runs
+  `docker compose up -d --build`. No manual steps required on the Proxmox server.
+- **OGI and ShadowBroker automated** — Both apps now have `git_url` and `compose_port_overrides`
+  in their catalog entries. OGI: frontend mapped to port 3002, backend API on 8000.
+  ShadowBroker: mapped to port 3003.
+- **Deploy button + live log panel** — The OGI and ShadowBroker tab placeholders now show a
+  🚀 Deploy button. On click it POSTs to `/api/deploy`, streams the full log output into a
+  monospace panel in the UI, and automatically loads the iframe on success (after a short grace
+  period for the service to come up).
+- **Service probe on tab open** — `ogiInit()` and `shadowbrokerInit()` now do a quick `fetch`
+  probe before loading the iframe. If the service is not yet running, the Deploy placeholder stays
+  visible instead of the iframe failing silently.
+
+### Fixed
+- **Port assignments** — OGI moved from 3001 (conflict with framerr) to 3002.
+  ShadowBroker moved from 3000 (user preference) to 3003. Both verified free via port scan.
+
+---
+
 ## [3.20.0] — 2026-04-14
 
 ### Changed
