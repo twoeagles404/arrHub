@@ -803,37 +803,48 @@ def _resolve_port_mapping(mapping: str) -> tuple:
     return mapping, host_port, host_port, False
 
 def _deploy_fullstack(app_id, app_data, config_dir):
-    """Clone/pull a git repo, patch ports, copy .env, and run docker compose up -d."""
-    git_url = app_data["git_url"]
+    """Download compose file via curl, patch ports, write .env, and run docker compose up -d.
+    No git required — files are fetched directly from GitHub raw URLs using curl."""
+    git_url   = app_data["git_url"]
     repos_dir = os.path.join(config_dir, "repos")
     repo_dir  = os.path.join(repos_dir, app_id)
     logs      = []
 
+    # Derive raw GitHub base URL from git_url
+    # e.g. https://github.com/user/repo  →  https://raw.githubusercontent.com/user/repo/main
+    raw_base = git_url.replace("https://github.com/", "https://raw.githubusercontent.com/") + "/main"
+
+    def _curl(url, dest):
+        """Download url → dest using curl. Returns (ok, output)."""
+        r = subprocess.run(
+            ["curl", "-fsSL", "--connect-timeout", "15", "-o", dest, url],
+            capture_output=True, text=True, timeout=60
+        )
+        return r.returncode == 0, r.stdout + r.stderr
+
     try:
-        os.makedirs(repos_dir, exist_ok=True)
+        os.makedirs(repo_dir, exist_ok=True)
 
-        # ── Clone or pull ─────────────────────────────────────────────────────
-        if os.path.isdir(os.path.join(repo_dir, ".git")):
-            r = subprocess.run(
-                ["git", "-C", repo_dir, "pull"],
-                capture_output=True, text=True, timeout=120
-            )
-            logs.append(f"$ git -C {repo_dir} pull\n{r.stdout}{r.stderr}".strip())
-        else:
-            r = subprocess.run(
-                ["git", "clone", git_url, repo_dir],
-                capture_output=True, text=True, timeout=180
-            )
-            logs.append(f"$ git clone {git_url} {repo_dir}\n{r.stdout}{r.stderr}".strip())
-        if r.returncode != 0:
-            raise RuntimeError(f"git failed (exit {r.returncode}): {r.stderr}")
+        # ── Download docker-compose.yml ───────────────────────────────────────
+        compose_file = os.path.join(repo_dir, "docker-compose.yml")
+        compose_url  = f"{raw_base}/docker-compose.yml"
+        ok, out = _curl(compose_url, compose_file)
+        if not ok:
+            # try .yaml variant
+            compose_url = f"{raw_base}/docker-compose.yaml"
+            ok, out = _curl(compose_url, compose_file)
+        if not ok:
+            raise RuntimeError(f"Could not download docker-compose.yml from {raw_base}")
+        logs.append(f"✓ Downloaded docker-compose.yml from {compose_url}")
 
-        # ── Copy .env.example → .env if missing ───────────────────────────────
-        env_example = os.path.join(repo_dir, ".env.example")
+        # ── Download .env.example → .env if not already present ──────────────
         env_file    = os.path.join(repo_dir, ".env")
-        if os.path.exists(env_example) and not os.path.exists(env_file):
-            shutil.copy(env_example, env_file)
-            logs.append("$ cp .env.example .env  ✓")
+        env_example = os.path.join(repo_dir, ".env.example")
+        if not os.path.exists(env_file):
+            ok, _ = _curl(f"{raw_base}/.env.example", env_example)
+            if ok:
+                shutil.copy(env_example, env_file)
+                logs.append("✓ .env created from .env.example")
 
         # ── Apply environment overrides from catalog into .env ─────────────────
         env_overrides = app_data.get("environment", [])
