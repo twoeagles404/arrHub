@@ -242,13 +242,8 @@ download_file() {
     local label="$1"
     local remote_path="$2"     # path in the GitHub repo
     local dest_file="$3"
-    local local_copy="${4:-}"  # optional local path
-
-    if [[ -n "${local_copy}" && -f "${local_copy}" ]]; then
-        cp "${local_copy}" "${dest_file}"
-        ok "${label} (local copy)"
-        return 0
-    fi
+    # Always download from GitHub to ensure the latest version is used.
+    # Local copies are intentionally ignored to prevent stale code issues.
     info "Downloading ${label}..."
     if curl -fsSL "${GITHUB_RAW}/${remote_path}" -o "${dest_file}" 2>>"${LOG}"; then
         ok "${label} downloaded"

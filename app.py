@@ -803,50 +803,124 @@ def _resolve_port_mapping(mapping: str) -> tuple:
     return mapping, host_port, host_port, False
 
 def _deploy_fullstack(app_id, app_data, config_dir):
-    """Download compose file via curl, patch ports, write .env, and run docker compose up -d.
-    No git required — files are fetched directly from GitHub raw URLs using curl."""
-    git_url   = app_data["git_url"]
+    """Deploy a full-stack app using one of two strategies:
+
+    Strategy A — pre_built_images (catalog has 'deploy_images' list):
+      Pull each image via the Docker SDK and start the containers directly.
+      No git, no curl, no compose needed. Used for ShadowBroker.
+
+    Strategy B — source_build (catalog has 'git_url' only):
+      Use the 'alpine/git' Docker image (run via SDK) to clone the repo onto
+      the host, patch port overrides, then call 'docker compose up -d --build'
+      via subprocess.  No git binary needed inside the ArrHub container.
+      Used for OGI.
+    """
+    logs = []
+
+    def _log_history(status, err=None):
+        log_text = "\n\n".join(logs) + (f"\n\n✗ ERROR: {err}" if err else "")
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "INSERT INTO deploy_history (app_id, app_name, action, status, compose_snapshot, error) VALUES (?,?,?,?,?,?)",
+                    (app_id, app_data["name"], "deploy", status, log_text, err)
+                )
+                conn.commit()
+        except Exception:
+            pass
+        return log_text
+
+    # ── Strategy A: pre-built images — Docker SDK only ────────────────────────
+    deploy_images = app_data.get("deploy_images")
+    if deploy_images:
+        try:
+            if not DOCKER_OK:
+                raise RuntimeError("Docker socket not available")
+
+            for svc in deploy_images:
+                image   = svc["image"]
+                name    = svc["name"]
+                ports   = svc.get("ports", {})   # {"3000/tcp": 3003}
+                env     = svc.get("environment", {})
+                restart = svc.get("restart", "unless-stopped")
+
+                # Pull image
+                logs.append(f"⬇ Pulling {image}…")
+                _dc.images.pull(image)
+                logs.append(f"✓ Pulled {image}")
+
+                # Remove any existing container with same name
+                try:
+                    old = _dc.containers.get(name)
+                    old.stop(timeout=10)
+                    old.remove()
+                    logs.append(f"✓ Removed existing container '{name}'")
+                except Exception:
+                    pass
+
+                # Start container (bridge networking with explicit port mapping)
+                _dc.containers.run(
+                    image,
+                    name=name,
+                    detach=True,
+                    ports=ports,
+                    environment=env,
+                    restart_policy={"Name": restart}
+                )
+                logs.append(f"✓ Started '{name}'")
+
+            log_text = _log_history("success")
+            return jsonify({"status": "success", "app_id": app_id, "logs": log_text})
+
+        except Exception as e:
+            log_text = _log_history("failed", str(e))
+            return jsonify({"status": "failed", "logs": log_text, "error": str(e)}, 500)
+
+    # ── Strategy B: source-build via alpine/git + docker compose ─────────────
+    git_url  = app_data.get("git_url")
+    if not git_url:
+        return jsonify({"error": "App has neither deploy_images nor git_url"}, 400)
+
     repos_dir = os.path.join(config_dir, "repos")
     repo_dir  = os.path.join(repos_dir, app_id)
-    logs      = []
-
-    # Derive raw GitHub base URL from git_url
-    # e.g. https://github.com/user/repo  →  https://raw.githubusercontent.com/user/repo/main
-    raw_base = git_url.replace("https://github.com/", "https://raw.githubusercontent.com/") + "/main"
-
-    def _curl(url, dest):
-        """Download url → dest using curl. Returns (ok, output)."""
-        r = subprocess.run(
-            ["curl", "-fsSL", "--connect-timeout", "15", "-o", dest, url],
-            capture_output=True, text=True, timeout=60
-        )
-        return r.returncode == 0, r.stdout + r.stderr
 
     try:
-        os.makedirs(repo_dir, exist_ok=True)
+        if not DOCKER_OK:
+            raise RuntimeError("Docker socket not available")
 
-        # ── Download docker-compose.yml ───────────────────────────────────────
-        compose_file = os.path.join(repo_dir, "docker-compose.yml")
-        compose_url  = f"{raw_base}/docker-compose.yml"
-        ok, out = _curl(compose_url, compose_file)
-        if not ok:
-            # try .yaml variant
-            compose_url = f"{raw_base}/docker-compose.yaml"
-            ok, out = _curl(compose_url, compose_file)
-        if not ok:
-            raise RuntimeError(f"Could not download docker-compose.yml from {raw_base}")
-        logs.append(f"✓ Downloaded docker-compose.yml from {compose_url}")
+        os.makedirs(repos_dir, exist_ok=True)
 
-        # ── Download .env.example → .env if not already present ──────────────
-        env_file    = os.path.join(repo_dir, ".env")
+        # ── Clone or update via alpine/git container (no git binary needed) ───
+        if os.path.isdir(os.path.join(repo_dir, ".git")):
+            logs.append(f"⬆ Updating existing repo at {repo_dir}…")
+            _dc.containers.run(
+                "alpine/git",
+                command=["-C", f"/repo", "pull"],
+                volumes={repo_dir: {"bind": "/repo", "mode": "rw"}},
+                remove=True,
+                network_mode="host"
+            )
+            logs.append("✓ git pull complete")
+        else:
+            logs.append(f"⬇ Cloning {git_url} → {repo_dir}…")
+            os.makedirs(repo_dir, exist_ok=True)
+            _dc.containers.run(
+                "alpine/git",
+                command=["clone", git_url, "/repo"],
+                volumes={repo_dir: {"bind": "/repo", "mode": "rw"}},
+                remove=True,
+                network_mode="host"
+            )
+            logs.append("✓ git clone complete")
+
+        # ── Copy .env.example → .env if missing ───────────────────────────────
         env_example = os.path.join(repo_dir, ".env.example")
-        if not os.path.exists(env_file):
-            ok, _ = _curl(f"{raw_base}/.env.example", env_example)
-            if ok:
-                shutil.copy(env_example, env_file)
-                logs.append("✓ .env created from .env.example")
+        env_file    = os.path.join(repo_dir, ".env")
+        if os.path.exists(env_example) and not os.path.exists(env_file):
+            shutil.copy(env_example, env_file)
+            logs.append("✓ .env created from .env.example")
 
-        # ── Apply environment overrides from catalog into .env ─────────────────
+        # ── Apply catalog environment overrides into .env ─────────────────────
         env_overrides = app_data.get("environment", [])
         if env_overrides:
             env_content = open(env_file).read() if os.path.exists(env_file) else ""
@@ -854,17 +928,14 @@ def _deploy_fullstack(app_id, app_data, config_dir):
                 if "=" in entry:
                     key, val = entry.split("=", 1)
                     if re.search(rf"^{re.escape(key)}\s*=", env_content, re.MULTILINE):
-                        env_content = re.sub(
-                            rf"^{re.escape(key)}\s*=.*", f"{key}={val}",
-                            env_content, flags=re.MULTILINE
-                        )
+                        env_content = re.sub(rf"^{re.escape(key)}\s*=.*", f"{key}={val}", env_content, flags=re.MULTILINE)
                     else:
                         env_content += f"\n{key}={val}"
             with open(env_file, "w") as f:
                 f.write(env_content)
-            logs.append(f"✓ .env updated with catalog overrides: {[e.split('=')[0] for e in env_overrides]}")
+            logs.append(f"✓ .env updated: {[e.split('=')[0] for e in env_overrides]}")
 
-        # ── Patch compose_port_overrides into docker-compose.yml ──────────────
+        # ── Patch port overrides into docker-compose.yml ──────────────────────
         overrides = app_data.get("compose_port_overrides", {})
         if overrides:
             compose_file = os.path.join(repo_dir, "docker-compose.yml")
@@ -873,9 +944,8 @@ def _deploy_fullstack(app_id, app_data, config_dir):
             if os.path.exists(compose_file):
                 content = open(compose_file).read()
                 for container_port, host_port in overrides.items():
-                    # Matches:  - "XXXX:container_port"  or  - XXXX:container_port
                     content = re.sub(
-                        rf'(- ["\']?)\d+:{re.escape(str(container_port))}(["\']?)',
+                        rf'(- ["\']?)\$\{{[^}}]+:-)?[^:"\'\s]+:{re.escape(str(container_port))}(["\']?)',
                         rf'\g<1>{host_port}:{container_port}\g<2>',
                         content
                     )
@@ -883,45 +953,26 @@ def _deploy_fullstack(app_id, app_data, config_dir):
                     f.write(content)
                 logs.append(f"✓ docker-compose.yml ports patched: {overrides}")
 
-        # ── docker compose up -d ──────────────────────────────────────────────
+        # ── docker compose up -d --build ──────────────────────────────────────
+        logs.append("🔨 Running docker compose up -d --build…")
         r = subprocess.run(
             ["docker", "compose", "up", "-d", "--build"],
             cwd=repo_dir,
             capture_output=True, text=True, timeout=600
         )
-        logs.append(f"$ docker compose up -d --build\n{r.stdout}{r.stderr}".strip())
+        logs.append(f"{r.stdout}{r.stderr}".strip())
         if r.returncode != 0:
             raise RuntimeError(f"docker compose failed (exit {r.returncode}): {r.stderr}")
 
-        log_text = "\n\n".join(logs)
-        try:
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute(
-                    "INSERT INTO deploy_history (app_id, app_name, action, status, compose_snapshot, error) VALUES (?,?,?,?,?,?)",
-                    (app_id, app_data["name"], "deploy", "success", log_text, None)
-                )
-                conn.commit()
-        except Exception:
-            pass
-
+        log_text = _log_history("success")
         return jsonify({"status": "success", "app_id": app_id, "logs": log_text, "repo_dir": repo_dir})
 
     except subprocess.TimeoutExpired as e:
-        err = f"Deployment timed out: {e}"
+        log_text = _log_history("failed", f"Timed out: {e}")
+        return jsonify({"status": "failed", "logs": log_text, "error": str(e)}, 500)
     except Exception as e:
-        err = str(e)
-
-    log_text = "\n\n".join(logs) + f"\n\n✗ ERROR: {err}"
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(
-                "INSERT INTO deploy_history (app_id, app_name, action, status, compose_snapshot, error) VALUES (?,?,?,?,?,?)",
-                (app_id, app_data["name"], "deploy", "failed", log_text, err)
-            )
-            conn.commit()
-    except Exception:
-        pass
-    return jsonify({"status": "failed", "logs": log_text, "error": err}, 500)
+        log_text = _log_history("failed", str(e))
+        return jsonify({"status": "failed", "logs": log_text, "error": str(e)}, 500)
 
 
 @app.post("/api/deploy")

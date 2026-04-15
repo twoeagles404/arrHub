@@ -2724,7 +2724,7 @@
       "id": "shadowbroker",
       "name": "ShadowBroker",
       "category": "OSINT & Intel",
-      "image": "node:20-alpine",
+      "image": "ghcr.io/bigbodycobain/shadowbroker-frontend:latest",
       "description": "Real-time geospatial intelligence platform — 60+ public data feeds including aircraft ADS-B, maritime AIS, satellites, military bases, conflict zones, CCTV and more on a single map.",
       "ports": [
         "3003:3000"
@@ -2733,15 +2733,29 @@
       "environment": [],
       "privileged": false,
       "restart": "unless-stopped",
-      "network_mode": "host",
+      "network_mode": "bridge",
       "custom_service": false,
       "depends_on": [],
       "url_path": "/",
       "icon": "🛰️",
       "full_stack": true,
-      "git_url": "https://github.com/BigBodyCobain/Shadowbroker",
-      "compose_port_overrides": {"3000": "3003"},
-      "notes": "Fully automated: click Deploy in ArrHub. Clones repo, configures ports, starts via docker compose. Frontend accessible on port 3003."
+      "deploy_images": [
+        {
+          "name": "shadowbroker-backend",
+          "image": "ghcr.io/bigbodycobain/shadowbroker-backend:latest",
+          "ports": {"8000/tcp": 8002},
+          "environment": {"BIND": "0.0.0.0"},
+          "restart": "unless-stopped"
+        },
+        {
+          "name": "shadowbroker-frontend",
+          "image": "ghcr.io/bigbodycobain/shadowbroker-frontend:latest",
+          "ports": {"3000/tcp": 3003},
+          "environment": {},
+          "restart": "unless-stopped"
+        }
+      ],
+      "notes": "Fully automated: click Deploy in ArrHub. Pulls pre-built images from ghcr.io and starts both backend (port 8002) and frontend (port 3003) containers directly via Docker SDK — no git or compose needed."
     }
   ]
 }
