@@ -63,7 +63,7 @@ hdr() {
     printf "${C}${B}            ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ${N}\n"
     printf "\n"
     printf "${G}${B}                             v${VERSION}${N}\n"
-    printf "${C}                        101 apps · Pure Bash · MIT License${N}\n"
+    printf "${C}                        103 apps · Pure Bash · MIT License${N}\n"
     printf "${C}              Apple Glass UI · Swipe Cards · Umbrel Auto-Wire${N}\n"
     printf "\n"
     printf "${C}${B}%s${N}\n" "$(printf '═%.0s' {1..64})"

@@ -1,7 +1,7 @@
 # 👻 ArrHub
 
 > A dead-simple, fully open-source homelab Docker deployment tool.
-> One `curl | sudo bash` install. Pure Bash TUI + real-time FastAPI WebUI. **101 apps across 17 categories.** MIT licensed.
+> One `curl | sudo bash` install. Pure Bash TUI + real-time FastAPI WebUI. **103 apps across 17 categories.** MIT licensed.
 > Apple Glassmorphism UI · Swipeable Media Suite Card · HLS.js Player · Umbrel-style Arr Auto-Wiring
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -13,7 +13,7 @@
 ## Features
 
 - **One-command install** — `curl -fsSL ... | sudo bash`, zero manual steps
-- **101 apps** across 17 categories — ARR Suite, Media Servers, Monitoring, Security, and more
+- **103 apps** across 17 categories — ARR Suite, Media Servers, Monitoring, Security, and more
 - **Pure Bash TUI** — run `media` to launch the interactive deployment wizard
 - **FastAPI WebUI** on port `:9999` — real-time SSE dashboard with Apple glassmorphism UI
 - **Apple Glassmorphism UI** — `backdrop-filter: blur(40px) saturate(180%)` panels, ambient radial gradient orbs, Apple HIG color palette throughout the dashboard
@@ -260,7 +260,7 @@ arrhub/
 ├── app.py               ← FastAPI WebUI (all HTML/CSS/JS embedded, served on :9999)
 ├── Dockerfile           ← Multi-stage build: docker CLI + python:3.12-slim
 ├── apps/
-│   └── catalog.json     ← Master app catalog (101 apps)
+│   └── catalog.json     ← Master app catalog (103 apps)
 └── README.md
 ```
 
