@@ -891,19 +891,25 @@ def _deploy_fullstack(app_id, app_data, config_dir):
         os.makedirs(repos_dir, exist_ok=True)
 
         # ── Clone or update via alpine/git container (no git binary needed) ───
-        if os.path.isdir(os.path.join(repo_dir, ".git")):
+        git_dir = os.path.join(repo_dir, ".git")
+        if os.path.isdir(git_dir):
             logs.append(f"⬆ Updating existing repo at {repo_dir}…")
             _dc.containers.run(
                 "alpine/git",
-                command=["-C", f"/repo", "pull"],
+                command=["pull"],
                 volumes={repo_dir: {"bind": "/repo", "mode": "rw"}},
+                working_dir="/repo",
                 remove=True,
                 network_mode="host"
             )
             logs.append("✓ git pull complete")
         else:
-            logs.append(f"⬇ Cloning {git_url} → {repo_dir}…")
+            # Remove stale/empty dir from a previous failed attempt before cloning
+            if os.path.isdir(repo_dir):
+                shutil.rmtree(repo_dir)
+                logs.append(f"✓ Removed stale directory {repo_dir}")
             os.makedirs(repo_dir, exist_ok=True)
+            logs.append(f"⬇ Cloning {git_url} → {repo_dir}…")
             _dc.containers.run(
                 "alpine/git",
                 command=["clone", git_url, "/repo"],
@@ -992,8 +998,8 @@ def api_deploy_app(body: dict = Body(default={})):
 
     config_dir = _db_get("config_dir", "/docker")
 
-    # ── Full-stack git+compose deployment ─────────────────────────────────────
-    if app_data.get("git_url"):
+    # ── Full-stack deployment (pre-built images or git+compose) ──────────────
+    if app_data.get("git_url") or app_data.get("deploy_images"):
         return _deploy_fullstack(app_id, app_data, config_dir)
 
     media_dir = _db_get("media_dir", "/mnt/media")
