@@ -6,6 +6,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.20.2] — 2026-04-16
+
+### Fixed
+- **OGI deploy stuck on "destination path '/repo' already exists and is not an empty directory"** —
+  Root cause was a Docker-in-Docker path mismatch. ArrHub runs in its own container and its
+  `/docker` directory is not bind-mounted from the host, so `shutil.rmtree(repo_dir)` only cleaned
+  ArrHub's internal view while the host's `/docker/repos/ogi` (the path Docker's daemon actually
+  binds when it runs the sibling `alpine/git` container) kept stale files from earlier partial
+  clones. Replaced the Python-side cleanup with a sibling `alpine` container that runs
+  `rm -rf /repo/*` over the same host-view volume. Also moved the `.git` existence check to a
+  sibling container so the pull-vs-clone decision is made against the host filesystem, and added
+  an automatic fallback to a fresh clone if `git pull` fails on a corrupt checkout.
+- **ShadowBroker and OGI tabs showed a broken-image icon** — Both frontends send
+  `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`, so they cannot
+  render inside any iframe. The iframe is now hidden and replaced with a "✅ Service is running
+  on port N" card with a prominent "↗ Open in new tab" button. The Reload button re-probes the
+  service instead of reloading the dead iframe.
+
+---
+
 ## [3.20.1] — 2026-04-15
 
 ### Added

@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.20.1 · Full deployment, update management, and real-time monitoring
+Version: 3.20.2 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.20.1')
+app = FastAPI(title='ArrHub Monitor', version='3.20.2')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -889,26 +889,78 @@ def _deploy_fullstack(app_id, app_data, config_dir):
             raise RuntimeError("Docker socket not available")
 
         os.makedirs(repos_dir, exist_ok=True)
+        os.makedirs(repo_dir,  exist_ok=True)
 
-        # ── Clone or update via alpine/git container (no git binary needed) ───
-        git_dir = os.path.join(repo_dir, ".git")
-        if os.path.isdir(git_dir):
+        # ── Clone via alpine/git container (no git binary needed) ─────────────
+        # DinD note: ArrHub runs in a container and its /docker path is NOT
+        # shared with the host. When we mount repo_dir into a sibling container,
+        # the Docker daemon resolves the path on the HOST filesystem, not inside
+        # ArrHub. So shutil.rmtree(repo_dir) from here would only clean ArrHub's
+        # view — stale files left on the host by previous attempts stay behind
+        # and make subsequent `git clone` fail with "destination path '/repo'
+        # already exists and is not an empty directory".
+        #
+        # Fix: detect an existing checkout via a sibling alpine container (sees
+        # the same host view git clone will), and always clean via a sibling
+        # container too before cloning fresh.
+
+        def _host_has_git_dir():
+            """Return True if /repo/.git exists on the HOST view of repo_dir."""
+            try:
+                out = _dc.containers.run(
+                    "alpine",
+                    command=["sh", "-c", "test -d /repo/.git && echo YES || echo NO"],
+                    volumes={repo_dir: {"bind": "/repo", "mode": "rw"}},
+                    remove=True
+                )
+                return b"YES" in (out or b"")
+            except Exception:
+                return False
+
+        def _host_wipe_repo():
+            """Wipe everything inside /repo on the HOST view."""
+            try:
+                _dc.containers.run(
+                    "alpine",
+                    command=["sh", "-c", "rm -rf /repo/..?* /repo/.[!.]* /repo/* 2>/dev/null; true"],
+                    volumes={repo_dir: {"bind": "/repo", "mode": "rw"}},
+                    remove=True
+                )
+                return True
+            except Exception as _e:
+                logs.append(f"(cleanup skipped: {_e})")
+                return False
+
+        if _host_has_git_dir():
             logs.append(f"⬆ Updating existing repo at {repo_dir}…")
-            _dc.containers.run(
-                "alpine/git",
-                command=["pull"],
-                volumes={repo_dir: {"bind": "/repo", "mode": "rw"}},
-                working_dir="/repo",
-                remove=True,
-                network_mode="host"
-            )
-            logs.append("✓ git pull complete")
+            try:
+                _dc.containers.run(
+                    "alpine/git",
+                    command=["pull"],
+                    volumes={repo_dir: {"bind": "/repo", "mode": "rw"}},
+                    working_dir="/repo",
+                    remove=True,
+                    network_mode="host"
+                )
+                logs.append("✓ git pull complete")
+            except Exception as _pe:
+                # Pull failed — fall back to a fresh clone
+                logs.append(f"(pull failed, re-cloning: {_pe})")
+                _host_wipe_repo()
+                logs.append(f"⬇ Cloning {git_url} → {repo_dir}…")
+                _dc.containers.run(
+                    "alpine/git",
+                    command=["clone", git_url, "/repo"],
+                    volumes={repo_dir: {"bind": "/repo", "mode": "rw"}},
+                    remove=True,
+                    network_mode="host"
+                )
+                logs.append("✓ git clone complete")
         else:
-            # Remove stale/empty dir from a previous failed attempt before cloning
-            if os.path.isdir(repo_dir):
-                shutil.rmtree(repo_dir)
-                logs.append(f"✓ Removed stale directory {repo_dir}")
-            os.makedirs(repo_dir, exist_ok=True)
+            # No .git on the host view — wipe any stragglers (DinD leftovers)
+            # before cloning, otherwise git clone refuses a non-empty target.
+            _host_wipe_repo()
+            logs.append(f"✓ Cleaned {repo_dir} (host view)")
             logs.append(f"⬇ Cloning {git_url} → {repo_dir}…")
             _dc.containers.run(
                 "alpine/git",
@@ -1263,7 +1315,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.20.1",
+            "version": "3.20.2",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1326,7 +1378,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.20.1",
+            "version": "3.20.2",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1697,7 +1749,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.20.1"})
+    return jsonify({"update_available": False, "version": "3.20.2"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -5992,7 +6044,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.20.1</div>
+      <div class="sb-version">v3.20.2</div>
     </div>
   </div>
 
@@ -7281,7 +7333,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.20.1</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.20.2</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -14409,15 +14461,38 @@ async function deployFullStack(appId) {
     }
 }
 
-// ── OGI (OSINT framework) ────────────────────────────────────────────────────
-// Use same hostname as ArrHub so remote access (e.g. http://10.0.0.33:9999)
+// ── OGI / ShadowBroker — external-app tabs ───────────────────────────────────
+// These two frontends set X-Frame-Options: DENY and Content-Security-Policy
+// frame-ancestors 'none', so they refuse to render inside an iframe. Instead
+// of showing a broken-iframe icon, we probe the service and present a
+// "running — open in a new tab" card when it's up. The iframe remains as a
+// fallback but is hidden via display:none.
+// Uses window.location.hostname so remote access (e.g. http://10.0.0.33:9999)
 // resolves to the server, not the client's localhost.
+
+function _renderRunningCard(ph, label, url, port) {
+    if (!ph) return;
+    ph.innerHTML = `
+        <div style="font-size:38px;line-height:1">✅</div>
+        <strong style="color:var(--text);font-size:15px">${label} is running on port ${port}</strong>
+        <span style="font-size:12px;color:var(--text3);max-width:440px;line-height:1.5">
+            ${label}'s security policy (<code>X-Frame-Options: DENY</code>) blocks embedding
+            inside ArrHub. Open it in a new tab — your dashboard session stays open here.
+        </span>
+        <a href="${url}" target="_blank" rel="noopener" class="btn-primary"
+           style="text-decoration:none;padding:8px 18px;font-size:12px;margin-top:4px">
+           ↗ Open ${label}
+        </a>`;
+    ph.style.display = 'flex';
+}
+
+// ── OGI (OSINT framework) ────────────────────────────────────────────────────
 let _ogiInited = false;
 function _ogiUrl() { return `http://${window.location.hostname}:3002`; }
 function ogiInit() {
     if (_ogiInited) return;
     _ogiInited = true;
-    // Probe the service first — only load iframe if it's actually up
+    // Probe — if service is up, show the running card; otherwise leave deploy placeholder.
     fetch(_ogiUrl(), { mode: 'no-cors', signal: AbortSignal.timeout(3000) })
         .then(() => ogiLoad())
         .catch(() => { /* service not running — placeholder stays, user clicks Deploy */ });
@@ -14427,14 +14502,13 @@ function ogiLoad() {
     const f  = document.getElementById('ogi-frame');
     const ph = document.getElementById('ogi-placeholder');
     const lk = document.getElementById('ogi-open-link');
-    if (f) { f.src = url; }
-    if (ph) { ph.style.display = 'none'; }
-    if (lk) { lk.href = url; }
+    if (lk) lk.href = url;
+    if (f)  f.style.display = 'none';  // iframe is always blocked — don't bother
+    _renderRunningCard(ph, 'OGI', url, 3002);
 }
 function ogiReload() {
-    const f = document.getElementById('ogi-frame');
-    if (f && f.src && f.src !== window.location.href) { f.src = f.src; }
-    else ogiLoad();
+    _ogiInited = false;  // force re-probe
+    ogiInit();
 }
 
 // ── ShadowBroker (geospatial intel) ──────────────────────────────────────────
@@ -14443,7 +14517,6 @@ function _shadowbrokerUrl() { return `http://${window.location.hostname}:3003`; 
 function shadowbrokerInit() {
     if (_shadowbrokerInited) return;
     _shadowbrokerInited = true;
-    // Probe the service first — only load iframe if it's actually up
     fetch(_shadowbrokerUrl(), { mode: 'no-cors', signal: AbortSignal.timeout(3000) })
         .then(() => shadowbrokerLoad())
         .catch(() => { /* service not running — placeholder stays, user clicks Deploy */ });
@@ -14453,14 +14526,13 @@ function shadowbrokerLoad() {
     const f  = document.getElementById('shadowbroker-frame');
     const ph = document.getElementById('shadowbroker-placeholder');
     const lk = document.getElementById('shadowbroker-open-link');
-    if (f) { f.src = url; }
-    if (ph) { ph.style.display = 'none'; }
-    if (lk) { lk.href = url; }
+    if (lk) lk.href = url;
+    if (f)  f.style.display = 'none';
+    _renderRunningCard(ph, 'ShadowBroker', url, 3003);
 }
 function shadowbrokerReload() {
-    const f = document.getElementById('shadowbroker-frame');
-    if (f && f.src && f.src !== window.location.href) { f.src = f.src; }
-    else shadowbrokerLoad();
+    _shadowbrokerInited = false;
+    shadowbrokerInit();
 }
 
 // ── Live TV (YouTube embed) ────────────────────────────────────────────────
